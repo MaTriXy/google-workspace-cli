@@ -25,6 +25,39 @@ import { setLoggingEnabled } from './utils/logger';
 import { applyToolNameNormalization } from './utils/tool-normalization';
 import { SCOPES } from './auth/scopes';
 
+// Shared schemas for calendar event tools
+const eventMeetAndAttachmentsSchema = {
+  addGoogleMeet: z
+    .boolean()
+    .optional()
+    .describe(
+      "Whether to create a Google Meet link for the event. The Meet URL will be available in the response's hangoutLink field.",
+    ),
+  attachments: z
+    .array(
+      z.object({
+        fileUrl: z
+          .string()
+          .url()
+          .describe(
+            'Google Drive file URL (e.g., https://drive.google.com/file/d/...)',
+          ),
+        title: z
+          .string()
+          .optional()
+          .describe('Display title for the attachment.'),
+        mimeType: z
+          .string()
+          .optional()
+          .describe('MIME type of the attachment.'),
+      }),
+    )
+    .optional()
+    .describe(
+      'Google Drive file attachments. IMPORTANT: Providing attachments fully REPLACES any existing attachments on the event (not appended).',
+    ),
+};
+
 // Shared schemas for Gmail tools
 const emailComposeSchema = {
   to: z
@@ -620,7 +653,8 @@ async function main() {
   server.registerTool(
     'calendar.createEvent',
     {
-      description: 'Creates a new event in a calendar.',
+      description:
+        "Creates a new event in a calendar. Supports optional Google Meet link generation and Google Drive file attachments. When addGoogleMeet is true, the Meet URL will be in the response's hangoutLink field. Attachments fully replace any existing attachments.",
       inputSchema: {
         calendarId: z
           .string()
@@ -654,6 +688,7 @@ async function main() {
           .describe(
             'Whether to send notifications to attendees. Defaults to "all" if attendees are provided, otherwise "none".',
           ),
+        ...eventMeetAndAttachmentsSchema,
       },
     },
     calendarService.createEvent,
@@ -735,7 +770,8 @@ async function main() {
   server.registerTool(
     'calendar.updateEvent',
     {
-      description: 'Updates an existing event in a calendar.',
+      description:
+        "Updates an existing event in a calendar. Supports adding Google Meet links and Google Drive file attachments. When addGoogleMeet is true, the Meet URL will be in the response's hangoutLink field. Attachments fully replace any existing attachments (not appended).",
       inputSchema: {
         eventId: z.string().describe('The ID of the event to update.'),
         calendarId: z
@@ -772,6 +808,7 @@ async function main() {
           .array(z.string())
           .optional()
           .describe('The new list of attendees for the event.'),
+        ...eventMeetAndAttachmentsSchema,
       },
     },
     calendarService.updateEvent,

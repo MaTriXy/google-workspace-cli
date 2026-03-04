@@ -4,11 +4,22 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import crypto from 'node:crypto';
 import { calendar_v3, google } from 'googleapis';
 import { logToFile } from '../utils/logger';
 import { gaxiosOptions } from '../utils/GaxiosConfig';
 import { iso8601DateTimeSchema, emailArraySchema } from '../utils/validation';
 import { z } from 'zod';
+
+/**
+ * Google Drive file attachment for calendar events.
+ * Attachments are fully replaced (not appended) when provided.
+ */
+interface EventAttachment {
+  fileUrl: string;
+  title?: string;
+  mimeType?: string;
+}
 
 export interface CreateEventInput {
   calendarId?: string;
@@ -18,6 +29,8 @@ export interface CreateEventInput {
   end: { dateTime: string };
   attendees?: string[];
   sendUpdates?: 'all' | 'externalOnly' | 'none';
+  addGoogleMeet?: boolean;
+  attachments?: EventAttachment[];
 }
 
 export interface ListEventsInput {
@@ -45,6 +58,8 @@ export interface UpdateEventInput {
   start?: { dateTime: string };
   end?: { dateTime: string };
   attendees?: string[];
+  addGoogleMeet?: boolean;
+  attachments?: EventAttachment[];
 }
 
 export interface RespondToEventInput {
@@ -66,6 +81,37 @@ export class CalendarService {
   private primaryCalendarId: string | null = null;
 
   constructor(private authManager: any) {}
+
+  /**
+   * Adds conferenceData and attachments to an event body and its API params.
+   *
+   * IMPORTANT: Attachments are fully REPLACED, not appended. When attachments
+   * are provided, any existing attachments on the event will be removed.
+   */
+  private applyMeetAndAttachments(
+    event: calendar_v3.Schema$Event,
+    params: { conferenceDataVersion?: number; supportsAttachments?: boolean },
+    addGoogleMeet?: boolean,
+    attachments?: EventAttachment[],
+  ): void {
+    if (addGoogleMeet) {
+      event.conferenceData = {
+        createRequest: {
+          requestId: crypto.randomUUID(),
+          conferenceSolutionKey: { type: 'hangoutsMeet' },
+        },
+      };
+      params.conferenceDataVersion = 1;
+    }
+    if (attachments && attachments.length > 0) {
+      event.attachments = attachments.map((a) => ({
+        fileUrl: a.fileUrl,
+        title: a.title,
+        mimeType: a.mimeType,
+      }));
+      params.supportsAttachments = true;
+    }
+  }
 
   private createValidationErrorResponse(error: unknown) {
     const errorMessage =
@@ -168,6 +214,8 @@ export class CalendarService {
       end,
       attendees,
       sendUpdates,
+      addGoogleMeet,
+      attachments,
     } = input;
 
     // Validate datetime formats
@@ -188,6 +236,9 @@ export class CalendarService {
     logToFile(`Event start: ${start.dateTime}`);
     logToFile(`Event end: ${end.dateTime}`);
     logToFile(`Event attendees: ${attendees?.join(', ')}`);
+    if (addGoogleMeet) logToFile('Adding Google Meet link');
+    if (attachments?.length)
+      logToFile(`Attachments: ${attachments.length} file(s)`);
 
     // Determine sendUpdates value
     let finalSendUpdates = sendUpdates;
@@ -199,19 +250,28 @@ export class CalendarService {
     }
 
     try {
-      const event = {
+      const event: calendar_v3.Schema$Event = {
         summary,
         description,
         start,
         end,
         attendees: attendees?.map((email) => ({ email })),
       };
+
       const calendar = await this.getCalendar();
-      const res = await calendar.events.insert({
+      const insertParams: calendar_v3.Params$Resource$Events$Insert = {
         calendarId: finalCalendarId,
         requestBody: event,
         sendUpdates: finalSendUpdates,
-      });
+      };
+      this.applyMeetAndAttachments(
+        event,
+        insertParams,
+        addGoogleMeet,
+        attachments,
+      );
+
+      const res = await calendar.events.insert(insertParams);
       logToFile(`Successfully created event: ${res.data.id}`);
       return {
         content: [
@@ -380,8 +440,17 @@ export class CalendarService {
   };
 
   updateEvent = async (input: UpdateEventInput) => {
-    const { eventId, calendarId, summary, description, start, end, attendees } =
-      input;
+    const {
+      eventId,
+      calendarId,
+      summary,
+      description,
+      start,
+      end,
+      attendees,
+      addGoogleMeet,
+      attachments,
+    } = input;
 
     // Validate datetime formats if provided
     try {
@@ -400,6 +469,9 @@ export class CalendarService {
 
     const finalCalendarId = calendarId || (await this.getPrimaryCalendarId());
     logToFile(`Updating event ${eventId} in calendar: ${finalCalendarId}`);
+    if (addGoogleMeet) logToFile('Adding Google Meet link');
+    if (attachments?.length)
+      logToFile(`Attachments: ${attachments.length} file(s)`);
 
     try {
       const calendar = await this.getCalendar();
@@ -413,11 +485,19 @@ export class CalendarService {
       if (attendees)
         requestBody.attendees = attendees.map((email) => ({ email }));
 
-      const res = await calendar.events.update({
+      const updateParams: calendar_v3.Params$Resource$Events$Update = {
         calendarId: finalCalendarId,
         eventId,
         requestBody,
-      });
+      };
+      this.applyMeetAndAttachments(
+        requestBody,
+        updateParams,
+        addGoogleMeet,
+        attachments,
+      );
+
+      const res = await calendar.events.update(updateParams);
 
       logToFile(`Successfully updated event: ${res.data.id}`);
       return {
